@@ -1,0 +1,76 @@
+name: Publish
+
+# UwUMail's release workflow pushes the signed setup and release.json to a
+# short-lived branch `incoming/v<version>`. This turns it into a GitHub release,
+# updates the update feeds on main and deletes the branch again, so the
+# installer never stays in the git history.
+
+on:
+  push:
+    branches: ["incoming/**"]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Read the release
+        id: release
+        run: |
+          version=$(jq -r .version release.json)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$(jq -r .prerelease release.json)" >> "$GITHUB_OUTPUT"
+          test -f "UwUMail-Setup-$version.exe"
+          test -f "UwUMail-Setup-$version.exe.sig"
+          jq -r '"## Deutsch\n\n" + .notes.de + "\n\n## English\n\n" + .notes.en' release.json > "$RUNNER_TEMP/notes.md"
+          mkdir -p "$RUNNER_TEMP/files"
+          cp release.json "UwUMail-Setup-$version.exe" "UwUMail-Setup-$version.exe.sig" "$RUNNER_TEMP/files/"
+
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.release.outputs.version }}
+          PRERELEASE: ${{ steps.release.outputs.prerelease }}
+        run: |
+          flags=()
+          if [ "$PRERELEASE" = "true" ]; then flags+=(--prerelease); else flags+=(--latest); fi
+          gh release create "v$VERSION" "$RUNNER_TEMP/files/UwUMail-Setup-$VERSION.exe" \
+            --repo "$GITHUB_REPOSITORY" --target main --title "UwUMail $VERSION" \
+            --notes-file "$RUNNER_TEMP/notes.md" "${flags[@]}"
+
+      - name: Update the feeds
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+          PRERELEASE: ${{ steps.release.outputs.prerelease }}
+        run: |
+          files="$RUNNER_TEMP/files"
+          jq -n \
+            --arg version "$VERSION" \
+            --arg notes "$(jq -c .notes "$files/release.json")" \
+            --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg signature "$(cat "$files/UwUMail-Setup-$VERSION.exe.sig")" \
+            --arg url "https://github.com/$GITHUB_REPOSITORY/releases/download/v$VERSION/UwUMail-Setup-$VERSION.exe" \
+            '{version: $version, notes: $notes, pub_date: $date, platforms: {"windows-x86_64": {signature: $signature, url: $url}}}' \
+            > "$files/feed.json"
+          git checkout main
+          cp "$files/feed.json" beta.json
+          if [ "$PRERELEASE" != "true" ]; then cp "$files/feed.json" stable.json; fi
+          git config user.name "UwUMail Releases"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add beta.json stable.json 2>/dev/null || git add beta.json
+          git commit -m "UwUMail $VERSION"
+          git push origin main
+
+      - name: Remove the incoming branch
+        if: always()
+        run: git push origin --delete "$GITHUB_REF_NAME"
