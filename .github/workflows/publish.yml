@@ -1,7 +1,8 @@
 name: Publish
 
 # UwUMail's release workflow pushes the signed setup and release.json to a
-# short-lived branch `incoming/v<version>`. This turns it into a GitHub release,
+# short-lived branch `incoming/v<version>`, based on main so this workflow is part
+# of the pushed commit. This turns it into a GitHub release,
 # updates the update feeds on main and deletes the branch again, so the
 # installer never stays in the git history.
 
@@ -20,7 +21,7 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           fetch-depth: 0
 
@@ -28,8 +29,15 @@ jobs:
         id: release
         run: |
           version=$(jq -r .version release.json)
+          prerelease=$(jq -r .prerelease release.json)
+          # The version ends up in file names, tags and URLs: only plain semver is accepted.
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]] || [ "$GITHUB_REF_NAME" != "incoming/v$version" ]; then
+            echo "::error::Unexpected version '$version' on $GITHUB_REF_NAME"
+            exit 1
+          fi
+          case "$prerelease" in true|false) ;; *) echo "::error::prerelease must be true or false"; exit 1 ;; esac
           echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "prerelease=$(jq -r .prerelease release.json)" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
           test -f "UwUMail-Setup-$version.exe"
           test -f "UwUMail-Setup-$version.exe.sig"
           jq -r '"## Deutsch\n\n" + .notes.de + "\n\n## English\n\n" + .notes.en' release.json > "$RUNNER_TEMP/notes.md"
